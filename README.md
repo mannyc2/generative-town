@@ -36,6 +36,11 @@ pnpm design "medieval village"
 pnpm plan
 ```
 
+Gemini remains the default image generator. To generate the spritesheet image
+with Ideogram 4 instead, set `IMAGE_PROVIDER=ideogram` and add
+`IDEOGRAM_API_KEY`; the Designer still uses Gemini for scene and metadata
+generation.
+
 Your outputs will be in `src/agent/output/`.
 
 ## Commands
@@ -88,6 +93,7 @@ See the [examples/](examples/) folder for pre-generated outputs:
 - Node.js 18+
 - pnpm
 - [Google Generative AI API key](https://aistudio.google.com/apikey) (Gemini)
+- Optional: [Ideogram API key](https://developer.ideogram.ai/ideogram-api/api-setup) for `IMAGE_PROVIDER=ideogram`
 
 ## How the Agents Work
 

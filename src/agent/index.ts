@@ -5,6 +5,7 @@ import { join } from 'path';
 import { runDesignerAgent } from './designer/agent';
 import { runPlannerAgent } from './planner/agent';
 import { SpritesheetMetadataSchema, MapSchema } from './types';
+import { getImageProviderFromEnv } from './config';
 
 /**
  * Agent Pipeline for Generative Town (Simplified)
@@ -52,7 +53,10 @@ async function findSpritesheetImage(outputDir: string): Promise<string | null> {
       .sort((a, b) => b.mtime - a.mtime); // newest first
 
     if (spritesheetFiles.length > 0) {
-      return join(outputDir, spritesheetFiles[0].name);
+      const newest = spritesheetFiles[0];
+      if (newest) {
+        return join(outputDir, newest.name);
+      }
     }
   } catch {
     // Directory doesn't exist
@@ -78,7 +82,11 @@ async function design(theme: string, options: PipelineOptions = {}) {
   console.log(`\n🎨 Generating spritesheet for theme "${theme}"\n`);
 
   if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
-    console.error('❌ Error: GOOGLE_GENERATIVE_AI_API_KEY environment variable is required');
+    console.error('❌ Error: GOOGLE_GENERATIVE_AI_API_KEY environment variable is required for metadata generation');
+    process.exit(1);
+  }
+  if (getImageProviderFromEnv() === 'ideogram' && !process.env.IDEOGRAM_API_KEY) {
+    console.error('❌ Error: IDEOGRAM_API_KEY environment variable is required when IMAGE_PROVIDER=ideogram');
     process.exit(1);
   }
 
@@ -207,7 +215,9 @@ Options:
   --verbose, -v               Show detailed output
 
 Environment:
-  GOOGLE_GENERATIVE_AI_API_KEY      Required for all AI operations.
+  GOOGLE_GENERATIVE_AI_API_KEY      Required for Gemini metadata/planner operations.
+  IMAGE_PROVIDER                    Optional: gemini (default) or ideogram for spritesheet image generation.
+  IDEOGRAM_API_KEY                  Required only when IMAGE_PROVIDER=ideogram.
 `);
 }
 

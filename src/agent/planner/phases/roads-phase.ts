@@ -7,27 +7,34 @@
 
 import { streamText, stepCountIs } from 'ai';
 import { google } from '@ai-sdk/google';
+import { Effect } from 'effect';
 import type { GridState } from '../../lib/grid-state';
-import type { SpritesheetMetadata } from '../../types';
+import type { Direction, SpritesheetMetadata, Sprite } from '../../types';
 import { createPlaceRoadTool } from '../tools/place-road';
 import { createConnectRoadsTool } from '../tools/connect-roads';
 import { createViewMapTool } from '../tools';
+import { plannerError } from '../errors';
 
 /**
  * Execute the road building phase.
  * Places roads using exact sprite IDs with connectivity validation.
  */
-export async function executeRoadsPhase(
+export const executeRoadsPhase = Effect.fn('Planner.RoadsPhase')(function*(
   grid: GridState,
   metadata: SpritesheetMetadata,
   width: number,
   height: number,
   verbose: boolean,
   sceneDescription?: string
-): Promise<void> {
-  if (verbose) console.log('[Roads Phase] Starting...');
+) {
+  if (verbose) yield* Effect.sync(() => console.log('[Roads Phase] Starting...'));
 
   const maxRoadTiles = Math.floor(width * height * 0.25);
+  const roadSprites = getRoadSprites(metadata);
+
+  if (roadSprites.length === 0) {
+    return yield* Effect.fail(plannerError('roads', 'No road sprites found in metadata'));
+  }
 
   const tools = {
     placeRoad: createPlaceRoadTool(grid, maxRoadTiles, verbose),
@@ -35,28 +42,42 @@ export async function executeRoadsPhase(
     viewMap: createViewMapTool(grid),
   };
 
-  const systemPrompt = buildRoadsPrompt(width, height, metadata, maxRoadTiles, sceneDescription);
+  const systemPrompt = buildRoadsPrompt(
+    width,
+    height,
+    metadata,
+    roadSprites,
+    maxRoadTiles,
+    sceneDescription
+  );
 
-  const result = streamText({
-    model: google('gemini-2.0-flash'),
-    system: systemPrompt,
-    tools,
-    stopWhen: stepCountIs(25),
-    prompt: `Build a connected road network on the ${width}x${height} map.
+  yield* Effect.tryPromise({
+    try: async () => {
+      const result = streamText({
+        model: google('gemini-2.0-flash'),
+        system: systemPrompt,
+        tools,
+        stopWhen: stepCountIs(25),
+        prompt: `Build a connected road network on the ${width}x${height} map.
 
 Create roads that divide the map into distinct zones.
 Use connectRoads at the end to auto-fix any connectivity issues.`,
+      });
+      await result.text;
+    },
+    catch: (cause) =>
+      plannerError('roads', 'Roads phase model/tool execution failed', cause),
   });
-
-  await result.text;
 
   if (verbose) {
     const connectivity = grid.validateRoadConnectivity();
-    console.log(
-      `[Roads Phase] Complete: ${connectivity.totalRoadTiles} tiles, connected=${connectivity.connected}`
+    yield* Effect.sync(() =>
+      console.log(
+        `[Roads Phase] Complete: ${connectivity.totalRoadTiles} tiles, connected=${connectivity.connected}`
+      )
     );
   }
-}
+});
 
 /**
  * Infer road layout style from scene description or theme.
@@ -92,6 +113,12 @@ function inferLayoutStyle(
   };
 }
 
+function getRoadSprites(metadata: SpritesheetMetadata): Sprite[] {
+  return metadata.sprites.filter(
+    (s) => s.category === 'ground' && s.connectivity?.connects?.length
+  );
+}
+
 /**
  * Build the system prompt for roads phase.
  * Fully dynamic - all sprite info comes from metadata.
@@ -101,18 +128,10 @@ function buildRoadsPrompt(
   width: number,
   height: number,
   metadata: SpritesheetMetadata,
+  roadSprites: Sprite[],
   maxRoadTiles: number,
   sceneDescription?: string
 ): string {
-  // Extract road sprites (ground tiles with connectivity.connects)
-  const roadSprites = metadata.sprites.filter(
-    (s) => s.category === 'ground' && s.connectivity?.connects?.length
-  );
-
-  if (roadSprites.length === 0) {
-    throw new Error('No road sprites found in metadata');
-  }
-
   // Infer layout style from scene description
   const layoutStyle = inferLayoutStyle(sceneDescription, metadata.theme);
 
@@ -128,11 +147,11 @@ function buildRoadsPrompt(
   // Find sprites by connectivity type for examples
   const findByType = (type: string) =>
     roadSprites.find((s) => s.connectivity?.type === type)?.id;
-  const findByConnects = (dirs: readonly string[]) =>
+  const findByConnects = (dirs: readonly Direction[]) =>
     roadSprites.find((s) => {
       const connects = s.connectivity?.connects ?? [];
       return (
-        dirs.every((d) => connects.includes(d as 'north' | 'south' | 'east' | 'west')) &&
+        dirs.every((d) => connects.includes(d)) &&
         connects.length === dirs.length
       );
     })?.id;

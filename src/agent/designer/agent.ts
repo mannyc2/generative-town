@@ -93,7 +93,9 @@ export async function runDesignerAgent(
     console.log(`[Designer] Generating spritesheet image...`);
   }
 
-  const imageResult = await generateSpritesheetImage(prompt, outputDir);
+  const imageResult = await generateSpritesheetImage(prompt, outputDir, undefined, {
+    metadata: metadataWithScene,
+  });
 
   if (verbose) {
     if (imageResult.cached) {

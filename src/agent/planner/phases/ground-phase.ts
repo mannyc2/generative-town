@@ -7,24 +7,26 @@
 
 import { streamText, stepCountIs } from 'ai';
 import { google } from '@ai-sdk/google';
+import { Effect } from 'effect';
 import type { GridState } from '../../lib/grid-state';
 import type { SpritesheetMetadata } from '../../types';
 import { createFillGroundTool } from '../tools/fill-ground';
 import { createViewMapTool } from '../tools';
+import { plannerError } from '../errors';
 
 /**
  * Execute the ground filling phase.
  * Fills 100% of the map with ground tiles using quadrant-based approach.
  */
-export async function executeGroundPhase(
+export const executeGroundPhase = Effect.fn('Planner.GroundPhase')(function*(
   grid: GridState,
   metadata: SpritesheetMetadata,
   width: number,
   height: number,
   verbose: boolean,
   sceneDescription?: string
-): Promise<void> {
-  if (verbose) console.log('[Ground Phase] Starting...');
+) {
+  if (verbose) yield* Effect.sync(() => console.log('[Ground Phase] Starting...'));
 
   const tools = {
     fillGround: createFillGroundTool(grid, verbose),
@@ -37,17 +39,19 @@ export async function executeGroundPhase(
     .map((s) => s.id);
 
   if (groundSprites.length === 0) {
-    throw new Error('No ground sprites found in metadata');
+    return yield* Effect.fail(plannerError('ground', 'No ground sprites found in metadata'));
   }
 
   const systemPrompt = buildGroundPrompt(width, height, metadata, sceneDescription);
 
-  const result = streamText({
-    model: google('gemini-2.0-flash'),
-    system: systemPrompt,
-    tools,
-    stopWhen: stepCountIs(10),
-    prompt: `Fill the entire ${width}x${height} map with ground tiles.
+  yield* Effect.tryPromise({
+    try: async () => {
+      const result = streamText({
+        model: google('gemini-2.0-flash'),
+        system: systemPrompt,
+        tools,
+        stopWhen: stepCountIs(10),
+        prompt: `Fill the entire ${width}x${height} map with ground tiles.
 
 First, analyze the available ground sprites listed in your context. Consider:
 1. Which tiles best match the scene's primary areas (centers, plazas)?
@@ -61,15 +65,20 @@ Then create zones using fillGround calls:
 - Match the atmosphere in the WORLD VISION
 
 Use viewMap("ground") to verify full coverage.`,
+      });
+      await result.text;
+    },
+    catch: (cause) =>
+      plannerError('ground', 'Ground phase model/tool execution failed', cause),
   });
-
-  await result.text;
 
   if (verbose) {
     const stats = grid.getStats();
-    console.log(`[Ground Phase] Complete: ${stats.groundFilled}/${stats.totalTiles} tiles`);
+    yield* Effect.sync(() =>
+      console.log(`[Ground Phase] Complete: ${stats.groundFilled}/${stats.totalTiles} tiles`)
+    );
   }
-}
+});
 
 /**
  * Build the system prompt for ground phase.

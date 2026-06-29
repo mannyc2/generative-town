@@ -12,6 +12,7 @@
  * - Shared GridState flows through all phases
  */
 
+import { Console, Effect } from 'effect';
 import { GridState } from '../lib/grid-state';
 import { executeGroundPhase } from './phases/ground-phase';
 import { executeRoadsPhase } from './phases/roads-phase';
@@ -20,7 +21,7 @@ import type { SpritesheetMetadata, GameMap } from '../types';
 import { DEFAULT_MAP_SIZE } from '../config';
 
 /**
- * Run the Planner Agent with sequential phase execution.
+ * Planner workflow with sequential phase execution.
  *
  * @param metadata - Spritesheet metadata from Designer
  * @param width - Map width in tiles (default: 10)
@@ -28,12 +29,12 @@ import { DEFAULT_MAP_SIZE } from '../config';
  * @param verbose - Enable detailed logging
  * @returns Complete GameMap JSON
  */
-export async function runPlannerAgent(
+export const runPlannerEffect = Effect.fn('Planner.run')(function*(
   metadata: SpritesheetMetadata,
   width = DEFAULT_MAP_SIZE,
   height = DEFAULT_MAP_SIZE,
   verbose = false
-): Promise<GameMap> {
+) {
   // Shared state across all phases
   const grid = new GridState(width, height, metadata);
 
@@ -43,38 +44,48 @@ export async function runPlannerAgent(
     metadata.sceneDescription ?? `A ${metadata.theme} themed environment.`;
 
   if (verbose) {
-    console.log(`[Planner] Starting ${width}x${height} map generation...`);
-    console.log(
-      `[Planner] Scene context: ${sceneDescription.length} chars available`
-    );
+    yield* Console.log(`[Planner] Starting ${width}x${height} map generation...`);
+    yield* Console.log(`[Planner] Scene context: ${sceneDescription.length} chars available`);
   }
 
   // Phase 1: Fill ground tiles
-  await executeGroundPhase(grid, metadata, width, height, verbose, sceneDescription);
+  yield* executeGroundPhase(grid, metadata, width, height, verbose, sceneDescription);
 
   if (verbose) {
     const stats = grid.getStats();
-    console.log(`[Planner] Ground: ${stats.groundFilled}/${stats.totalTiles} tiles`);
+    yield* Console.log(`[Planner] Ground: ${stats.groundFilled}/${stats.totalTiles} tiles`);
   }
 
   // Phase 2: Build road network
-  await executeRoadsPhase(grid, metadata, width, height, verbose, sceneDescription);
+  yield* executeRoadsPhase(grid, metadata, width, height, verbose, sceneDescription);
 
   if (verbose) {
     const connectivity = grid.validateRoadConnectivity();
-    console.log(
+    yield* Console.log(
       `[Planner] Roads: ${connectivity.totalRoadTiles} tiles, connected=${connectivity.connected}`
     );
   }
 
   // Phase 3: Place buildings and props
-  await executeObjectsPhase(grid, metadata, width, height, verbose, sceneDescription);
+  yield* executeObjectsPhase(grid, metadata, width, height, verbose, sceneDescription);
 
   if (verbose) {
     const stats = grid.getStats();
-    console.log(`[Planner] Objects: ${stats.objectsFilled} placed`);
-    console.log(`[Planner] Complete!`);
+    yield* Console.log(`[Planner] Objects: ${stats.objectsFilled} placed`);
+    yield* Console.log(`[Planner] Complete!`);
   }
 
   return grid.toJSON();
+});
+
+/**
+ * Promise boundary for existing callers and CLI code.
+ */
+export function runPlannerAgent(
+  metadata: SpritesheetMetadata,
+  width = DEFAULT_MAP_SIZE,
+  height = DEFAULT_MAP_SIZE,
+  verbose = false
+): Promise<GameMap> {
+  return Effect.runPromise(runPlannerEffect(metadata, width, height, verbose));
 }

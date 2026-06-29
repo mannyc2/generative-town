@@ -7,24 +7,26 @@
 
 import { streamText, stepCountIs } from 'ai';
 import { google } from '@ai-sdk/google';
+import { Effect } from 'effect';
 import type { GridState } from '../../lib/grid-state';
 import type { SpritesheetMetadata, Sprite } from '../../types';
 import { createPlaceAssetTool } from '../tools/place-asset';
 import { createViewMapTool } from '../tools';
+import { plannerError } from '../errors';
 
 /**
  * Execute the objects placement phase.
  * Places buildings and props on the objects layer.
  */
-export async function executeObjectsPhase(
+export const executeObjectsPhase = Effect.fn('Planner.ObjectsPhase')(function*(
   grid: GridState,
   metadata: SpritesheetMetadata,
   width: number,
   height: number,
   verbose: boolean,
   sceneDescription?: string
-): Promise<void> {
-  if (verbose) console.log('[Objects Phase] Starting...');
+) {
+  if (verbose) yield* Effect.sync(() => console.log('[Objects Phase] Starting...'));
 
   const tools = {
     placeAsset: createPlaceAssetTool(grid, verbose),
@@ -33,24 +35,31 @@ export async function executeObjectsPhase(
 
   const systemPrompt = buildObjectsPrompt(width, height, metadata, sceneDescription);
 
-  const result = streamText({
-    model: google('gemini-2.0-flash'),
-    system: systemPrompt,
-    tools,
-    stopWhen: stepCountIs(15),
-    prompt: `Place buildings and props on the ${width}x${height} map.
+  yield* Effect.tryPromise({
+    try: async () => {
+      const result = streamText({
+        model: google('gemini-2.0-flash'),
+        system: systemPrompt,
+        tools,
+        stopWhen: stepCountIs(15),
+        prompt: `Place buildings and props on the ${width}x${height} map.
 
 Buildings should be placed 1 tile away from roads.
 Props should be placed contextually (lamps near roads, benches in plazas, etc).`,
+      });
+      await result.text;
+    },
+    catch: (cause) =>
+      plannerError('objects', 'Objects phase model/tool execution failed', cause),
   });
-
-  await result.text;
 
   if (verbose) {
     const stats = grid.getStats();
-    console.log(`[Objects Phase] Complete: ${stats.objectsFilled} objects placed`);
+    yield* Effect.sync(() =>
+      console.log(`[Objects Phase] Complete: ${stats.objectsFilled} objects placed`)
+    );
   }
-}
+});
 
 /**
  * Categorize props by their likely placement context.

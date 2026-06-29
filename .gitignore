@@ -2,6 +2,7 @@
 
 .env
 node_modules
+.repos/effect
 
 # Output
 src/agent/output

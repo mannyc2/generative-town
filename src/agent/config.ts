@@ -55,6 +55,8 @@ export const DERIVED_CONFIG = {
 // Default map dimensions (width × height in tiles)
 export const DEFAULT_MAP_SIZE = 10;
 
+export type ImageProvider = 'gemini' | 'ideogram';
+
 // Gemini image models support more aspect ratios
 type GeminiAspectRatio =
   | '1:1'
@@ -71,13 +73,25 @@ type GeminiAspectRatio =
 // Gemini 3 Pro supports higher resolution output
 type GeminiImageSize = '1K' | '2K' | '4K';
 
-export interface ImageGenerationConfig {
+export interface GeminiImageGenerationConfig {
+  provider: 'gemini';
   model: 'gemini-2.5-flash-image-preview' | 'gemini-3-pro-image-preview';
   aspectRatio: GeminiAspectRatio;
   imageSize?: GeminiImageSize;
 }
 
-export const defaultImageConfig: ImageGenerationConfig = {
+export interface IdeogramImageGenerationConfig {
+  provider: 'ideogram';
+  model: 'ideogram-v4';
+  renderingSpeed: 'TURBO' | 'DEFAULT' | 'QUALITY';
+}
+
+export type ImageGenerationConfig =
+  | GeminiImageGenerationConfig
+  | IdeogramImageGenerationConfig;
+
+export const defaultGeminiImageConfig: GeminiImageGenerationConfig = {
+  provider: 'gemini',
   // Gemini 3 Pro for higher quality image generation
   model: 'gemini-3-pro-image-preview',
   // Sprite sheets must be square
@@ -85,3 +99,22 @@ export const defaultImageConfig: ImageGenerationConfig = {
   // Use resolution from GRID_CONFIG for consistency
   imageSize: GRID_CONFIG.resolution,
 };
+
+export const defaultIdeogramImageConfig: IdeogramImageGenerationConfig = {
+  provider: 'ideogram',
+  model: 'ideogram-v4',
+  renderingSpeed: 'DEFAULT',
+};
+
+export const defaultImageConfig = defaultGeminiImageConfig;
+
+export function getImageProviderFromEnv(): ImageProvider {
+  const provider = process.env.IMAGE_PROVIDER?.toLowerCase();
+  return provider === 'ideogram' || provider === 'ideogram-v4' ? 'ideogram' : 'gemini';
+}
+
+export function getDefaultImageConfig(): ImageGenerationConfig {
+  return getImageProviderFromEnv() === 'ideogram'
+    ? defaultIdeogramImageConfig
+    : defaultGeminiImageConfig;
+}

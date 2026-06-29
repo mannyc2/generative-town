@@ -1,11 +1,54 @@
 import { google } from '@ai-sdk/google';
 import { generateText } from 'ai';
+import { NodeHttpClient } from '@effect/platform-node';
 import { createHash } from 'crypto';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import sharp from 'sharp';
+import { Effect, Schema } from 'effect';
+import * as HttpBody from 'effect/unstable/http/HttpBody';
+import * as HttpClient from 'effect/unstable/http/HttpClient';
+import * as HttpClientResponse from 'effect/unstable/http/HttpClientResponse';
 import type { ImageGenerationConfig } from '../config';
-import { defaultImageConfig } from '../config';
+import { getDefaultImageConfig } from '../config';
+import type { SpritesheetMetadata } from '../types';
+import { generateIdeogramCaption } from '../designer/ideogram-caption';
+
+class ImageGenerationError extends Schema.TaggedErrorClass<ImageGenerationError>()(
+  'ImageGenerationError',
+  {
+    provider: Schema.Literals(['gemini', 'ideogram']),
+    message: Schema.String,
+    cause: Schema.optionalKey(Schema.Defect()),
+  }
+) {}
+
+class IdeogramImageObject extends Schema.Class<IdeogramImageObject>('IdeogramImageObject')({
+  prompt: Schema.String,
+  resolution: Schema.String,
+  is_image_safe: Schema.Boolean,
+  seed: Schema.Number,
+  url: Schema.String,
+  style_type: Schema.optionalKey(Schema.String),
+}) {}
+
+class IdeogramGenerateResponse extends Schema.Class<IdeogramGenerateResponse>(
+  'IdeogramGenerateResponse'
+)({
+  created: Schema.String,
+  data: Schema.Array(IdeogramImageObject),
+  response_type: Schema.optionalKey(Schema.String),
+}) {}
+
+function imageGenerationError(
+  provider: ImageGenerationConfig['provider'],
+  message: string,
+  cause?: unknown
+): ImageGenerationError {
+  return cause === undefined
+    ? ImageGenerationError.make({ provider, message })
+    : ImageGenerationError.make({ provider, message, cause });
+}
 
 /**
  * Replace white (#FFFFFF) pixels with transparency.
@@ -67,6 +110,12 @@ export interface GenerateImageResult {
 
 export interface GenerateImageOptions {
   force?: boolean;
+  metadata?: SpritesheetMetadata;
+}
+
+interface IdeogramImageResult {
+  buffer: Buffer;
+  prompt: string;
 }
 
 /**
@@ -85,7 +134,7 @@ export interface GenerateImageOptions {
 export async function generateSpritesheetImage(
   prompt: string,
   outputDir: string,
-  config: ImageGenerationConfig = defaultImageConfig,
+  config: ImageGenerationConfig = getDefaultImageConfig(),
   options: GenerateImageOptions = {}
 ): Promise<GenerateImageResult> {
   // Ensure output directory exists
@@ -106,9 +155,46 @@ export async function generateSpritesheetImage(
     };
   }
 
-  console.log('🎨 Generating spritesheet image...');
+  console.log(`🎨 Generating spritesheet image with ${config.provider}...`);
 
-  // Gemini image generation uses generateText with responseModalities: ['IMAGE']
+  // Apply chroma key to replace white background with transparency
+  console.log('🔑 Applying chroma key (replacing white with transparency)...');
+  const rawBuffer =
+    config.provider === 'ideogram'
+      ? (await runIdeogramImage(
+        options.metadata ? generateIdeogramCaption(options.metadata) : prompt,
+        config
+      )).buffer
+      : await generateGeminiSpritesheetImage(prompt, config);
+  const processedBuffer = await chromaKeyWhite(rawBuffer);
+
+  // Save image as PNG with transparency
+  writeFileSync(imagePath, processedBuffer);
+
+  // Save metadata for cache validation and debugging
+  const metadata = {
+    prompt,
+    provider: config.provider,
+    model: config.model,
+    ...(config.provider === 'gemini'
+      ? { aspectRatio: config.aspectRatio, imageSize: config.imageSize }
+      : { renderingSpeed: config.renderingSpeed }),
+    generatedAt: new Date().toISOString(),
+  };
+  writeFileSync(metaPath, JSON.stringify(metadata, null, 2));
+
+  console.log(`✅ Image saved: ${imagePath}`);
+
+  return {
+    path: imagePath,
+    cached: false,
+  };
+}
+
+async function generateGeminiSpritesheetImage(
+  prompt: string,
+  config: Extract<ImageGenerationConfig, { provider: 'gemini' }>
+): Promise<Buffer> {
   const result = await generateText({
     model: google(config.model),
     prompt,
@@ -123,33 +209,93 @@ export async function generateSpritesheetImage(
     },
   });
 
-  // Extract image from response files
-  const imageFile = result.files?.find(f => f.mediaType.startsWith('image/'));
+  const imageFile = result.files?.find((f) => f.mediaType.startsWith('image/'));
   if (!imageFile) {
-    throw new Error('No image returned from Gemini');
+    throw imageGenerationError('gemini', 'No image returned from Gemini');
   }
 
-  // Apply chroma key to replace white background with transparency
-  console.log('🔑 Applying chroma key (replacing white with transparency)...');
-  const rawBuffer = Buffer.from(imageFile.uint8Array);
-  const processedBuffer = await chromaKeyWhite(rawBuffer);
+  return Buffer.from(imageFile.uint8Array);
+}
 
-  // Save image as PNG with transparency
-  writeFileSync(imagePath, processedBuffer);
+const decodeIdeogramResponse = Schema.decodeUnknownEffect(IdeogramGenerateResponse);
 
-  // Save metadata for cache validation and debugging
-  const metadata = {
-    prompt,
-    model: config.model,
-    aspectRatio: config.aspectRatio,
-    generatedAt: new Date().toISOString(),
-  };
-  writeFileSync(metaPath, JSON.stringify(metadata, null, 2));
+const generateIdeogramSpritesheetImage = Effect.fn('Ideogram.generateSpritesheetImage')(function*(
+  prompt: string | ReturnType<typeof generateIdeogramCaption>,
+  config: Extract<ImageGenerationConfig, { provider: 'ideogram' }>
+) {
+  const apiKey = process.env.IDEOGRAM_API_KEY;
+  if (!apiKey) {
+    return yield* Effect.fail(
+      imageGenerationError('ideogram', 'IDEOGRAM_API_KEY environment variable is required')
+    );
+  }
 
-  console.log(`✅ Image saved: ${imagePath}`);
+  const formData = new FormData();
+  if (typeof prompt === 'string') {
+    formData.append('text_prompt', prompt);
+  } else {
+    formData.append('json_prompt', JSON.stringify(prompt));
+  }
+  formData.append('rendering_speed', config.renderingSpeed);
+
+  const response = yield* HttpClient.post(
+    'https://api.ideogram.ai/v1/ideogram-v4/generate',
+    {
+      headers: { 'Api-Key': apiKey },
+      body: HttpBody.formData(formData),
+    }
+  ).pipe(
+    Effect.flatMap(HttpClientResponse.filterStatusOk),
+    Effect.mapError((cause) =>
+      imageGenerationError('ideogram', 'Ideogram generate request failed', cause)
+    )
+  );
+
+  const json = yield* response.json.pipe(
+    Effect.mapError((cause) =>
+      imageGenerationError('ideogram', 'Ideogram response was not valid JSON', cause)
+    )
+  );
+
+  const decoded = yield* decodeIdeogramResponse(json).pipe(
+    Effect.mapError((cause) =>
+      imageGenerationError('ideogram', 'Ideogram response did not match the expected schema', cause)
+    )
+  );
+
+  const image = decoded.data[0];
+  if (!image) {
+    return yield* Effect.fail(imageGenerationError('ideogram', 'Ideogram returned no images'));
+  }
+  if (!image.is_image_safe) {
+    return yield* Effect.fail(imageGenerationError('ideogram', 'Ideogram flagged the image as unsafe'));
+  }
+
+  const imageResponse = yield* HttpClient.get(image.url).pipe(
+    Effect.flatMap(HttpClientResponse.filterStatusOk),
+    Effect.mapError((cause) =>
+      imageGenerationError('ideogram', 'Ideogram image download failed', cause)
+    )
+  );
+  const arrayBuffer = yield* imageResponse.arrayBuffer.pipe(
+    Effect.mapError((cause) =>
+      imageGenerationError('ideogram', 'Downloaded Ideogram image was unreadable', cause)
+    )
+  );
 
   return {
-    path: imagePath,
-    cached: false,
-  };
+    buffer: Buffer.from(arrayBuffer),
+    prompt: image.prompt,
+  } satisfies IdeogramImageResult;
+});
+
+function runIdeogramImage(
+  prompt: string | ReturnType<typeof generateIdeogramCaption>,
+  config: Extract<ImageGenerationConfig, { provider: 'ideogram' }>
+): Promise<IdeogramImageResult> {
+  return Effect.runPromise(
+    generateIdeogramSpritesheetImage(prompt, config).pipe(
+      Effect.provide(NodeHttpClient.layerFetch)
+    )
+  );
 }
