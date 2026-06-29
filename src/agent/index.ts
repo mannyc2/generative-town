@@ -5,7 +5,6 @@ import { join } from 'path';
 import { runDesignerAgent } from './designer/agent';
 import { runPlannerAgent } from './planner/agent';
 import { SpritesheetMetadataSchema, MapSchema } from './types';
-import { getImageProviderFromEnv } from './config';
 
 /**
  * Agent Pipeline for Generative Town (Simplified)
@@ -85,11 +84,6 @@ async function design(theme: string, options: PipelineOptions = {}) {
     console.error('❌ Error: GOOGLE_GENERATIVE_AI_API_KEY environment variable is required for metadata generation');
     process.exit(1);
   }
-  if (getImageProviderFromEnv() === 'ideogram' && !process.env.IDEOGRAM_API_KEY) {
-    console.error('❌ Error: IDEOGRAM_API_KEY environment variable is required when IMAGE_PROVIDER=ideogram');
-    process.exit(1);
-  }
-
   const result = await runDesignerAgent(theme, verbose, outputDir);
 
   console.log('\n✅ Spritesheet generation complete!');
@@ -217,7 +211,9 @@ Options:
 Environment:
   GOOGLE_GENERATIVE_AI_API_KEY      Required for Gemini metadata/planner operations.
   IMAGE_PROVIDER                    Optional: gemini (default) or ideogram for spritesheet image generation.
-  IDEOGRAM_API_KEY                  Required only when IMAGE_PROVIDER=ideogram.
+  IDEOGRAM_MODE                     Optional when IMAGE_PROVIDER=ideogram: api (default) or local.
+  IDEOGRAM_API_KEY                  Required only for IMAGE_PROVIDER=ideogram with IDEOGRAM_MODE=api.
+  IDEOGRAM_LOCAL_SCRIPT             Required local path to ideogram4/run_inference.py for IDEOGRAM_MODE=local.
 `);
 }
 

@@ -37,9 +37,21 @@ pnpm plan
 ```
 
 Gemini remains the default image generator. To generate the spritesheet image
-with Ideogram 4 instead, set `IMAGE_PROVIDER=ideogram` and add
-`IDEOGRAM_API_KEY`; the Designer still uses Gemini for scene and metadata
-generation.
+with Ideogram 4 instead, set `IMAGE_PROVIDER=ideogram`. Hosted Ideogram uses
+`IDEOGRAM_MODE=api` and `IDEOGRAM_API_KEY`; local Ideogram uses
+`IDEOGRAM_MODE=local` and the open-source `ideogram4/run_inference.py` script.
+The Designer still uses Gemini for scene and metadata generation.
+
+```bash
+# Hosted Ideogram 4
+IMAGE_PROVIDER=ideogram IDEOGRAM_MODE=api pnpm design "medieval village"
+
+# Local Ideogram 4 clone
+IMAGE_PROVIDER=ideogram \
+IDEOGRAM_MODE=local \
+IDEOGRAM_LOCAL_SCRIPT=/path/to/ideogram4/run_inference.py \
+pnpm design "medieval village"
+```
 
 Your outputs will be in `src/agent/output/`.
 
@@ -93,7 +105,8 @@ See the [examples/](examples/) folder for pre-generated outputs:
 - Node.js 18+
 - pnpm
 - [Google Generative AI API key](https://aistudio.google.com/apikey) (Gemini)
-- Optional: [Ideogram API key](https://developer.ideogram.ai/ideogram-api/api-setup) for `IMAGE_PROVIDER=ideogram`
+- Optional: [Ideogram API key](https://developer.ideogram.ai/ideogram-api/api-setup) for `IMAGE_PROVIDER=ideogram` with `IDEOGRAM_MODE=api`
+- Optional: local [Ideogram 4](https://github.com/ideogram-oss/ideogram4) checkout for `IMAGE_PROVIDER=ideogram` with `IDEOGRAM_MODE=local`
 
 ## How the Agents Work
 

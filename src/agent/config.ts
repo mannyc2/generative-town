@@ -3,6 +3,8 @@
  * Centralized settings for image generation and other options.
  */
 
+import { Config, Effect } from 'effect';
+
 // ─────────────────────────────────────────────────────────────────
 // Resolution Configuration
 // Gemini outputs fixed resolutions: 1K (1024px), 2K (2048px), 4K (4096px)
@@ -80,11 +82,32 @@ export interface GeminiImageGenerationConfig {
   imageSize?: GeminiImageSize;
 }
 
-export interface IdeogramImageGenerationConfig {
+export type IdeogramMode = 'api' | 'local';
+type IdeogramRenderingSpeed = 'TURBO' | 'DEFAULT' | 'QUALITY';
+type IdeogramLocalQuantization = 'nf4' | 'fp8';
+
+export interface IdeogramApiImageGenerationConfig {
   provider: 'ideogram';
+  mode: 'api';
   model: 'ideogram-v4';
-  renderingSpeed: 'TURBO' | 'DEFAULT' | 'QUALITY';
+  renderingSpeed: IdeogramRenderingSpeed;
 }
+
+export interface IdeogramLocalImageGenerationConfig {
+  provider: 'ideogram';
+  mode: 'local';
+  model: 'ideogram-v4';
+  executable: string;
+  script: string;
+  height: number;
+  width: number;
+  samplerPreset: string;
+  quantization: IdeogramLocalQuantization;
+}
+
+export type IdeogramImageGenerationConfig =
+  | IdeogramApiImageGenerationConfig
+  | IdeogramLocalImageGenerationConfig;
 
 export type ImageGenerationConfig =
   | GeminiImageGenerationConfig
@@ -100,21 +123,88 @@ export const defaultGeminiImageConfig: GeminiImageGenerationConfig = {
   imageSize: GRID_CONFIG.resolution,
 };
 
-export const defaultIdeogramImageConfig: IdeogramImageGenerationConfig = {
+export const defaultIdeogramImageConfig: IdeogramApiImageGenerationConfig = {
   provider: 'ideogram',
+  mode: 'api',
   model: 'ideogram-v4',
   renderingSpeed: 'DEFAULT',
 };
 
 export const defaultImageConfig = defaultGeminiImageConfig;
 
-export function getImageProviderFromEnv(): ImageProvider {
-  const provider = process.env.IMAGE_PROVIDER?.toLowerCase();
-  return provider === 'ideogram' || provider === 'ideogram-v4' ? 'ideogram' : 'gemini';
-}
+const imageProviderConfig = Config.literals(
+  ['gemini', 'ideogram', 'ideogram-v4'],
+  'IMAGE_PROVIDER'
+).pipe(
+  Config.withDefault('gemini'),
+  Config.map((provider): ImageProvider =>
+    provider === 'ideogram-v4' ? 'ideogram' : provider
+  )
+);
+
+const ideogramModeConfig = Config.literals(['api', 'local'], 'IDEOGRAM_MODE').pipe(
+  Config.withDefault('api')
+);
+
+const ideogramApiImageConfig = Config.all({
+  renderingSpeed: Config.literals(['TURBO', 'DEFAULT', 'QUALITY'], 'IDEOGRAM_RENDERING_SPEED').pipe(
+    Config.withDefault('DEFAULT')
+  ),
+}).pipe(
+  Config.map(({ renderingSpeed }): IdeogramApiImageGenerationConfig => ({
+    provider: 'ideogram',
+    mode: 'api',
+    model: 'ideogram-v4',
+    renderingSpeed,
+  }))
+);
+
+const ideogramLocalImageConfig = Config.all({
+  executable: Config.nonEmptyString('IDEOGRAM_LOCAL_COMMAND').pipe(Config.withDefault('python')),
+  script: Config.nonEmptyString('IDEOGRAM_LOCAL_SCRIPT'),
+  height: Config.int('IDEOGRAM_LOCAL_HEIGHT').pipe(Config.withDefault(resolutionPx)),
+  width: Config.int('IDEOGRAM_LOCAL_WIDTH').pipe(Config.withDefault(resolutionPx)),
+  samplerPreset: Config.nonEmptyString('IDEOGRAM_LOCAL_SAMPLER_PRESET').pipe(
+    Config.withDefault('V4_QUALITY_48')
+  ),
+  quantization: Config.literals(['nf4', 'fp8'], 'IDEOGRAM_LOCAL_QUANTIZATION').pipe(
+    Config.withDefault('nf4')
+  ),
+}).pipe(
+  Config.map(
+    ({
+      executable,
+      script,
+      height,
+      width,
+      samplerPreset,
+      quantization,
+    }): IdeogramLocalImageGenerationConfig => ({
+      provider: 'ideogram',
+      mode: 'local',
+      model: 'ideogram-v4',
+      executable,
+      script,
+      height,
+      width,
+      samplerPreset,
+      quantization,
+    })
+  )
+);
+
+export const loadDefaultImageConfig = Effect.fn('Config.loadDefaultImageConfig')(function*() {
+  const provider = yield* imageProviderConfig;
+  if (provider === 'gemini') {
+    return defaultGeminiImageConfig;
+  }
+
+  const mode = yield* ideogramModeConfig;
+  return mode === 'local'
+    ? yield* ideogramLocalImageConfig
+    : yield* ideogramApiImageConfig;
+});
 
 export function getDefaultImageConfig(): ImageGenerationConfig {
-  return getImageProviderFromEnv() === 'ideogram'
-    ? defaultIdeogramImageConfig
-    : defaultGeminiImageConfig;
+  return Effect.runSync(loadDefaultImageConfig());
 }
